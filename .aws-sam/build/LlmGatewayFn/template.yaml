@@ -1,0 +1,93 @@
+# template.yaml
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LLM Gateway (FastAPI + Mangum on Lambda + HTTP API + DynamoDB)
+
+Parameters:
+  OpenAIKey:
+    Type: String
+    NoEcho: true
+    Description: "OpenAI API Key"
+  AnthropicKey:
+    Type: String
+    NoEcho: true
+    Description: "Anthropic API Key"
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Timeout: 30
+    MemorySize: 1024
+    Environment:
+      Variables:
+        REQUEST_TABLE: llm_gateway_requests
+        USAGE_TABLE: llm_gateway_usage
+        OPENAI_API_KEY: !Ref OpenAIKey
+        ANTHROPIC_API_KEY: !Ref AnthropicKey
+
+Resources:
+  LlmGatewayApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowMethods: ['*']
+        AllowOrigins: ['*']
+
+  LlmGatewayFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: server.app.server.handler
+      Architectures: [arm64]         # or [x86_64]
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RequestsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsageTable
+        - Statement:
+            # Bedrock invoke permissions (scope down to your region as needed)
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource: "*"
+      Events:
+        ChatCompletions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref LlmGatewayApi
+            Path: /v1/chat/completions
+            Method: POST
+
+  RequestsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: llm_gateway_requests
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: request_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: request_id
+          KeyType: HASH
+
+  UsageTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: llm_gateway_usage
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: date
+          AttributeType: S
+        - AttributeName: model
+          AttributeType: S
+      KeySchema:
+        - AttributeName: date
+          KeyType: HASH
+        - AttributeName: model
+          KeyType: RANGE
+
+Outputs:
+  HttpApiUrl:
+    Description: Invoke URL for the HttpApi
+    Value: !Sub "https://${LlmGatewayApi}.execute-api.${AWS::Region}.amazonaws.com"
